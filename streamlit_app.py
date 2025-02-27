@@ -1,151 +1,109 @@
 import streamlit as st
 import pandas as pd
-import math
-from pathlib import Path
+import numpy as np
 
-# Set the title and favicon that appear in the Browser's tab bar.
-st.set_page_config(
-    page_title='GDP dashboard',
-    page_icon=':earth_americas:', # This is an emoji shortcode. Could be a URL too.
-)
+# Google Sheets Configuration
+SHEET_ID = "1mB6AZurMLAqDJmou3z0IhOpz5LQAP413"
+SHEET_NAME = "Sheet1"
+SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet={SHEET_NAME}"
 
-# -----------------------------------------------------------------------------
-# Declare some useful functions.
+# Function to fetch real-time investment data
+@st.cache_data(ttl=30)  # Refreshes every 30 sec
+def fetch_data():
+    df = pd.read_csv(SHEET_URL, parse_dates=["Date"])
+    return df
 
-@st.cache_data
-def get_gdp_data():
-    """Grab GDP data from a CSV file.
+# Function to run simplified Monte Carlo investment simulations
+def run_simple_investment_simulation(data, num_simulations, num_days):
+    daily_returns_mean = data["Daily Returns"].mean()
+    daily_returns_std = data["Daily Returns"].std()
 
-    This uses caching to avoid having to read the file every time. If we were
-    reading from an HTTP endpoint instead of a file, it's a good idea to set
-    a maximum age to the cache with the TTL argument: @st.cache_data(ttl='1d')
-    """
+    # Generate random daily returns for simulations
+    simulated_daily_returns = np.random.normal(daily_returns_mean, daily_returns_std, (num_days, num_simulations))
 
-    # Instead of a CSV on disk, you could read from an HTTP endpoint here too.
-    DATA_FILENAME = Path(__file__).parent/'data/gdp_data.csv'
-    raw_gdp_df = pd.read_csv(DATA_FILENAME)
+    # Calculate cumulative returns for each simulation
+    cumulative_returns = np.cumprod(1 + simulated_daily_returns, axis=0)
 
-    MIN_YEAR = 1960
-    MAX_YEAR = 2022
+    # Adding a row of simulated cumulative returns at the end (to simulate portfolio growth)
+    initial_investment = data["Investment Amount"].iloc[0]
+    simulated_portfolio_value = initial_investment * cumulative_returns
+    
+    return pd.DataFrame(simulated_portfolio_value)
 
-    # The data above has columns like:
-    # - Country Name
-    # - Country Code
-    # - [Stuff I don't care about]
-    # - GDP for 1960
-    # - GDP for 1961
-    # - GDP for 1962
-    # - ...
-    # - GDP for 2022
-    #
-    # ...but I want this instead:
-    # - Country Name
-    # - Country Code
-    # - Year
-    # - GDP
-    #
-    # So let's pivot all those year-columns into two: Year and GDP
-    gdp_df = raw_gdp_df.melt(
-        ['Country Code'],
-        [str(x) for x in range(MIN_YEAR, MAX_YEAR + 1)],
-        'Year',
-        'GDP',
-    )
+# Streamlit UI
+st.title("📈 Investment Monte Carlo Simulator")
 
-    # Convert years from string to integers
-    gdp_df['Year'] = pd.to_numeric(gdp_df['Year'])
+# Load Data
+df = fetch_data()
 
-    return gdp_df
+if df.empty:
+    st.error("❌ No data found! Check your Google Sheets connection.")
+else:
+    st.success("✅ Investment Data Loaded Successfully!")
 
-gdp_df = get_gdp_data()
+    # Show editable portfolio data
+    st.subheader("💼 Edit Your Portfolio Data")
+    edited_df = st.data_editor(df, num_rows="dynamic")
 
-# -----------------------------------------------------------------------------
-# Draw the actual page
+    # Check required columns
+    required_columns = ["Date", "Investment Amount", "Daily Returns", "Cumulative Returns"]
+    if not all(col in edited_df.columns for col in required_columns):
+        st.error("❌ Missing required columns! Ensure 'Date', 'Investment Amount', 'Daily Returns', and 'Cumulative Returns' exist.")
+    else:
+        # Portfolio Summary
+        total_investment = edited_df["Investment Amount"].sum()
+        st.metric(label="💰 Total Investment", value=f"${total_investment:,.2f}")
 
-# Set the title that appears at the top of the page.
-'''
-# :earth_americas: GDP dashboard
+        # Plot investment growth, daily returns, and cumulative returns over time
+        st.subheader("📊 Investment Growth Over Time")
+        combined_plot = edited_df.set_index("Date")[["Daily Returns", "Cumulative Returns", "Investment Amount"]]
+        st.line_chart(combined_plot)
 
-Browse GDP data from the [World Bank Open Data](https://data.worldbank.org/) website. As you'll
-notice, the data only goes to 2022 right now, and datapoints for certain years are often missing.
-But it's otherwise a great (and did I mention _free_?) source of data.
-'''
+        # Set simulation parameters
+        st.subheader("🎛️ Simulation Settings")
+        st.caption("Choose the number of simulations and the investment horizon.")
 
-# Add some spacing
-''
-''
+        num_simulations = st.slider("Number of Simulations", min_value=50, max_value=500, value=100, step=50)
+        num_days = st.slider("Investment Horizon (Days)", min_value=30, max_value=252, value=252, step=30)
 
-min_value = gdp_df['Year'].min()
-max_value = gdp_df['Year'].max()
+        # Buttons
+        col1, col2 = st.columns(2)
+        run_simulation = col1.button("🚀 Run Simulation")
+        reset_data = col2.button("🔄 Reset Data")
 
-from_year, to_year = st.slider(
-    'Which years are you interested in?',
-    min_value=min_value,
-    max_value=max_value,
-    value=[min_value, max_value])
+        if reset_data:
+            st.cache_data.clear()
+            st.experimental_rerun()
 
-countries = gdp_df['Country Code'].unique()
+        if run_simulation:
+            st.subheader(f"📊 Running {num_simulations} Simulations Over {num_days} Days")
 
-if not len(countries):
-    st.warning("Select at least one country")
+            # Run Simulations
+            simulation_results = run_simple_investment_simulation(edited_df, num_simulations, num_days)
 
-selected_countries = st.multiselect(
-    'Which countries would you like to view?',
-    countries,
-    ['DEU', 'FRA', 'GBR', 'BRA', 'MEX', 'JPN'])
+            # Display simulation results
+            st.line_chart(simulation_results)
 
-''
-''
-''
+            # Predictions - Summary Statistics for the predicted returns
+            st.subheader("📈 Predictions: Summary Statistics for the Predicted Returns")
 
-# Filter the data
-filtered_gdp_df = gdp_df[
-    (gdp_df['Country Code'].isin(selected_countries))
-    & (gdp_df['Year'] <= to_year)
-    & (from_year <= gdp_df['Year'])
-]
+            # Calculate summary statistics for the final predicted returns
+            final_returns = simulation_results.iloc[-1]
+            summary_stats = final_returns.describe()
 
-st.header('GDP over time', divider='gray')
+            st.write(f"Count: {len(final_returns)}")
+            st.write(f"Mean: {summary_stats['mean']:.3f}")
+            st.write(f"Standard Deviation: {summary_stats['std']:.3f}")
+            st.write(f"Minimum: {summary_stats['min']:.3f}")
+            st.write(f"25th Percentile: {summary_stats['25%']:.3f}")
+            st.write(f"Median (50th Percentile): {summary_stats['50%']:.3f}")
+            st.write(f"75th Percentile: {summary_stats['75%']:.3f}")
+            st.write(f"Maximum: {summary_stats['max']:.3f}")
 
-''
-
-st.line_chart(
-    filtered_gdp_df,
-    x='Year',
-    y='GDP',
-    color='Country Code',
-)
-
-''
-''
-
-
-first_year = gdp_df[gdp_df['Year'] == from_year]
-last_year = gdp_df[gdp_df['Year'] == to_year]
-
-st.header(f'GDP in {to_year}', divider='gray')
-
-''
-
-cols = st.columns(4)
-
-for i, country in enumerate(selected_countries):
-    col = cols[i % len(cols)]
-
-    with col:
-        first_gdp = first_year[first_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-        last_gdp = last_year[last_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-
-        if math.isnan(first_gdp):
-            growth = 'n/a'
-            delta_color = 'off'
-        else:
-            growth = f'{last_gdp / first_gdp:,.2f}x'
-            delta_color = 'normal'
-
-        st.metric(
-            label=f'{country} GDP',
-            value=f'{last_gdp:,.0f}B',
-            delta=growth,
-            delta_color=delta_color
-        )
+            # Download button for simulated portfolio value data
+            st.download_button(
+                label="📥 Download Simulated Portfolio Values",
+                data=simulation_results.to_csv(index=False),
+                file_name="simulated_portfolio_values.csv",
+                mime="text/csv"
+            )
